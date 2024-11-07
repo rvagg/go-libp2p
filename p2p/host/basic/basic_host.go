@@ -190,7 +190,21 @@ func NewHost(n network.Network, opts *HostOpts) (*BasicHost, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	hostCtx, cancel := context.WithCancel(context.Background())
+
+	// FIXME:
+	// Remove this. Hack to try the tests quickly
+	if opts.ConnTracker == nil {
+		opts.ConnTracker = &conntracker.ConnTracker{}
+		opts.ConnTracker.Start(opts.EventBus, n)
+		go func() {
+			<-hostCtx.Done()
+			opts.ConnTracker.Stop()
+
+		}()
+	}
+
 	h := &BasicHost{
 		network:                 n,
 		psManager:               psManager,
