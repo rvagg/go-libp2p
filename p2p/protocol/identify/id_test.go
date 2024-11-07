@@ -215,6 +215,22 @@ func TestIDService(t *testing.T) {
 			testKnowsAddrs(t, h1, h2p, []ma.Multiaddr{})
 			testKnowsAddrs(t, h2, h1p, []ma.Multiaddr{})
 
+			// Assert that we have cleaned up metadata from the peerstore
+			ps1 := h1.Peerstore()
+			ps2 := h2.Peerstore()
+			type peerstoreAndPeerID struct {
+				peerstore peerstore.Peerstore
+				peerID    peer.ID
+			}
+			for _, psAndID := range []peerstoreAndPeerID{{ps1, h2p}, {ps2, h1p}} {
+				ps := psAndID.peerstore
+				p := psAndID.peerID
+				_, err = ps.Get(p, "AgentVersion")
+				require.ErrorIs(t, err, peerstore.ErrNotFound)
+				_, err = ps.Get(p, "ProtocolVersion")
+				require.ErrorIs(t, err, peerstore.ErrNotFound)
+			}
+
 			// test that we received the "identify completed" event.
 			select {
 			case evtAny := <-sub.Out():
