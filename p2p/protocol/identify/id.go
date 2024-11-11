@@ -1056,9 +1056,6 @@ func (nn *netNotifiee) Disconnected(_ network.Network, c network.Conn) {
 	ids.Host.Peerstore().UpdateAddrs(c.RemotePeer(), peerstore.ConnectedAddrTTL, peerstore.TempAddrTTL)
 	ids.Host.Peerstore().AddAddrs(c.RemotePeer(), addrs[:n], peerstore.RecentlyConnectedAddrTTL)
 	ids.Host.Peerstore().UpdateAddrs(c.RemotePeer(), peerstore.TempAddrTTL, 0)
-
-	// Clear the metadata we stored earlier.
-	ids.Host.Peerstore().RemovePeer(c.RemotePeer())
 }
 
 func (nn *netNotifiee) Listen(n network.Network, a ma.Multiaddr)      {}

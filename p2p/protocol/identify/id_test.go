@@ -23,6 +23,7 @@ import (
 	blhost "github.com/libp2p/go-libp2p/p2p/host/blank"
 	"github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	"github.com/libp2p/go-libp2p/p2p/host/peerstore/pstoremem"
+	"github.com/libp2p/go-libp2p/p2p/host/pstoremanager"
 	mocknet "github.com/libp2p/go-libp2p/p2p/net/mock"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	swarmt "github.com/libp2p/go-libp2p/p2p/net/swarm/testing"
@@ -124,10 +125,29 @@ func TestIDService(t *testing.T) {
 			})
 
 			clk := mockClock.NewMock()
-			swarm1 := swarmt.GenSwarm(t, swarmt.WithClock(clk))
-			swarm2 := swarmt.GenSwarm(t, swarmt.WithClock(clk))
-			h1 := blhost.NewBlankHost(swarm1)
-			h2 := blhost.NewBlankHost(swarm2)
+
+			eb1 := eventbus.NewBus()
+			eb2 := eventbus.NewBus()
+
+			swarm1 := swarmt.GenSwarm(t, swarmt.WithClock(clk), swarmt.EventBus(eb1))
+			swarm2 := swarmt.GenSwarm(t, swarmt.WithClock(clk), swarmt.EventBus(eb2))
+
+			h1 := blhost.NewBlankHost(swarm1, blhost.WithEventBus(eb1))
+			h2 := blhost.NewBlankHost(swarm2, blhost.WithEventBus(eb2))
+
+			psManager1, err := pstoremanager.NewPeerstoreManager(swarm1.Peerstore(), h1.EventBus(), swarm1, pstoremanager.WithGracePeriod(100*time.Millisecond))
+			require.NoError(t, err)
+			psManager1.Start()
+			t.Cleanup(func() {
+				psManager1.Close()
+			})
+
+			psManager2, err := pstoremanager.NewPeerstoreManager(swarm2.Peerstore(), h2.EventBus(), swarm2, pstoremanager.WithGracePeriod(100*time.Millisecond))
+			require.NoError(t, err)
+			psManager2.Start()
+			t.Cleanup(func() {
+				psManager2.Close()
+			})
 
 			h1p := h1.ID()
 			h2p := h2.ID()
@@ -222,14 +242,17 @@ func TestIDService(t *testing.T) {
 				peerstore peerstore.Peerstore
 				peerID    peer.ID
 			}
-			for _, psAndID := range []peerstoreAndPeerID{{ps1, h2p}, {ps2, h1p}} {
-				ps := psAndID.peerstore
-				p := psAndID.peerID
-				_, err = ps.Get(p, "AgentVersion")
-				require.ErrorIs(t, err, peerstore.ErrNotFound)
-				_, err = ps.Get(p, "ProtocolVersion")
-				require.ErrorIs(t, err, peerstore.ErrNotFound)
-			}
+
+			require.EventuallyWithT(t, func(t *assert.CollectT) {
+				for _, psAndID := range []peerstoreAndPeerID{{ps1, h2p}, {ps2, h1p}} {
+					ps := psAndID.peerstore
+					p := psAndID.peerID
+					_, err = ps.Get(p, "AgentVersion")
+					assert.ErrorIs(t, err, peerstore.ErrNotFound)
+					_, err = ps.Get(p, "ProtocolVersion")
+					assert.ErrorIs(t, err, peerstore.ErrNotFound)
+				}
+			}, 3*time.Second, 200*time.Millisecond)
 
 			// test that we received the "identify completed" event.
 			select {
