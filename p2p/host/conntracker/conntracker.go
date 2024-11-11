@@ -18,7 +18,6 @@ import (
 	logging "github.com/ipfs/go-log/v2"
 )
 
-const trackedConnsBound = 1_000_000
 const pendingReqBound = 1_000_000
 const gcInterval = time.Minute
 
