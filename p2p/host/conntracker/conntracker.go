@@ -525,3 +525,5 @@ func (ct *ConnTracker) sendReq(ctx context.Context, r req) (<-chan ConnWithMeta,
 func NoLimitedConnFilter(c network.Conn) bool {
 	return !c.Stat().Limited
 }
+
+// TODO: add a basic sort function that essentially copies [isBetterConn] in swarm.go
