@@ -9,8 +9,9 @@ import (
 	manet "github.com/multiformats/go-multiaddr/net"
 )
 
-// This is readiung the first 3 bytes of the packet. It should be instant.
-const identifyConnTimeout = 1 * time.Second
+// This is reading the first 3 bytes of the packet. It should be instant.
+// A var so we can change it in tests.
+var identifyConnTimeout = 1 * time.Second
 
 type DemultiplexedConnType int
 
