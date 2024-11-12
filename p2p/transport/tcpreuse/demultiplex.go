@@ -48,27 +48,27 @@ func identifyConnType(c manet.Conn) (DemultiplexedConnType, manet.Conn, error) {
 		return 0, nil, errors.Join(err, closeErr)
 	}
 
-	s, peekableConn, err := sampledconn.PeekBytes(c)
+	s, peekedConn, err := sampledconn.PeekBytes(c)
 	if err != nil {
 		closeErr := c.Close()
 		return 0, nil, errors.Join(err, closeErr)
 	}
 
-	if err := peekableConn.SetReadDeadline(time.Time{}); err != nil {
-		closeErr := peekableConn.Close()
+	if err := peekedConn.SetReadDeadline(time.Time{}); err != nil {
+		closeErr := peekedConn.Close()
 		return 0, nil, errors.Join(err, closeErr)
 	}
 
 	if IsMultistreamSelect(s) {
-		return DemultiplexedConnType_MultistreamSelect, peekableConn, nil
+		return DemultiplexedConnType_MultistreamSelect, peekedConn, nil
 	}
 	if IsTLS(s) {
-		return DemultiplexedConnType_TLS, peekableConn, nil
+		return DemultiplexedConnType_TLS, peekedConn, nil
 	}
 	if IsHTTP(s) {
-		return DemultiplexedConnType_HTTP, peekableConn, nil
+		return DemultiplexedConnType_HTTP, peekedConn, nil
 	}
-	return DemultiplexedConnType_Unknown, peekableConn, nil
+	return DemultiplexedConnType_Unknown, peekedConn, nil
 }
 
 // Matchers are implemented here instead of in the transports so we can easily fuzz them together.
