@@ -383,7 +383,12 @@ func (n *wildcardNode) emit(evt interface{}) {
 		select {
 		case sink.ch <- evt:
 		default:
-			n.slowConsumerTimer = emitAndLogError(n.slowConsumerTimer, wildcardType, evt, sink)
+			slowConsumerTimer := emitAndLogError(n.slowConsumerTimer, wildcardType, evt, sink)
+			defer func() {
+				n.Lock()
+				n.slowConsumerTimer = slowConsumerTimer
+				n.Unlock()
+			}()
 		}
 	}
 	n.RUnlock()
