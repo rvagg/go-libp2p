@@ -348,6 +348,12 @@ func (n *wildcardNode) addSink(sink *namedSink) {
 }
 
 func (n *wildcardNode) removeSink(ch chan interface{}) {
+	go func() {
+		// drain the event channel, will return when closed and drained.
+		// this is necessary to unblock publishes to this channel.
+		for range ch {
+		}
+	}()
 	n.nSinks.Add(-1) // ok to do outside the lock
 	n.Lock()
 	for i := 0; i < len(n.sinks); i++ {
