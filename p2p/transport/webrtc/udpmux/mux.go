@@ -224,6 +224,7 @@ func (mux *UDPMux) processPacket(buf []byte, addr net.Addr) (processed bool) {
 func (mux *UDPMux) Accept(ctx context.Context) (Candidate, error) {
 	select {
 	case c := <-mux.queue:
+		fmt.Println("accepting conn from queue: ", len(mux.queue))
 		return c, nil
 	case <-ctx.Done():
 		return Candidate{}, ctx.Err()

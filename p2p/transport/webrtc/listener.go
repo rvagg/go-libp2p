@@ -109,6 +109,7 @@ func (l *listener) listen() {
 	// dequeued by a call to Accept, or errors out in some way.
 	inFlightSemaphore := make(chan struct{}, l.transport.maxInFlightConnections)
 	for {
+		fmt.Println("accepting webrtc", len(inFlightSemaphore))
 		select {
 		case inFlightSemaphore <- struct{}{}:
 		case <-l.ctx.Done():
