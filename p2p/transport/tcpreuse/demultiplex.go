@@ -9,9 +9,11 @@ import (
 	manet "github.com/multiformats/go-multiaddr/net"
 )
 
-// This is reading the first 3 bytes of the packet. It should be instant.
+// This is reading the first 3 bytes of the first packet after the handshake.
+// It's set to the default TCP connect timeout in the TCP Transport.
+//
 // A var so we can change it in tests.
-var identifyConnTimeout = 1 * time.Second
+var identifyConnTimeout = 5 * time.Second
 
 type DemultiplexedConnType int
 
