@@ -65,9 +65,19 @@ func (t *transportConn) ConnState() network.ConnectionState {
 }
 
 func (t *transportConn) CloseWithError(errCode network.ConnErrorCode) error {
-	defer t.scope.Done()
-	if ce, ok := t.MuxedConn.(network.CloseWithErrorer); ok {
-		return ce.CloseWithError(errCode)
+	if ce, ok := t.MuxedConn.(interface {
+		CloseWithErrorChan(errCode network.ConnErrorCode) chan error
+	}); ok {
+		err := t.scope.ReserveMemory(10_000, network.ReservationPriorityMedium)
+		if err != nil {
+			return t.Close()
+		}
+		errCh := ce.CloseWithErrorChan(errCode)
+		go func() {
+			defer t.scope.Done()
+			<-errCh
+		}()
+		return nil
 	}
 	return t.Close()
 }
