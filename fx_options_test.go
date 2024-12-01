@@ -17,7 +17,9 @@ func TestGetPeerID(t *testing.T) {
 		WithFxOption(fx.Populate(&id)),
 	)
 	require.NoError(t, err)
-	defer host.Close()
+	defer func() {
+		host.Close()
+	}()
 
 	require.Equal(t, host.ID(), id)
 

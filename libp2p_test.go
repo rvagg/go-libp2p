@@ -485,6 +485,7 @@ func TestHostAddrsFactoryAddsCerthashes(t *testing.T) {
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		addrs := h.Addrs()
+		fmt.Println(addrs)
 		for _, a := range addrs {
 			first, last := ma.SplitFunc(a, func(c ma.Component) bool {
 				return c.Protocol().Code == ma.P_CERTHASH
