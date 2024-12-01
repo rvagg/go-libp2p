@@ -36,9 +36,6 @@ import (
 	msmux "github.com/multiformats/go-multistream"
 )
 
-// addrChangeTickrInterval is the interval between two address change ticks.
-var addrChangeTickrInterval = 5 * time.Second
-
 var log = logging.Logger("basichost")
 
 var (

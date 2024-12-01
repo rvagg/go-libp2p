@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"slices"
 	"sync"
 	"time"
@@ -17,17 +16,18 @@ import (
 	"github.com/libp2p/go-libp2p/core/transport"
 	"github.com/libp2p/go-libp2p/p2p/host/autonat"
 	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
-	"github.com/libp2p/go-libp2p/p2p/host/basic/internal/backoff"
 	"github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
 	libp2pwebtransport "github.com/libp2p/go-libp2p/p2p/transport/webtransport"
-	"github.com/libp2p/go-netroute"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
 )
 
 type peerRecordFunc func([]ma.Multiaddr) (*record.Envelope, error)
+
+// addrChangeTickrInterval is the interval between two address change ticks.
+var addrChangeTickrInterval = 5 * time.Second
 
 type addressService struct {
 	s                       network.Network
@@ -45,13 +45,9 @@ type addressService struct {
 	ctx                     context.Context
 	ctxCancel               context.CancelFunc
 
-	wg                     sync.WaitGroup
-	updateLocalIPv4Backoff backoff.ExpBackoff
-	updateLocalIPv6Backoff backoff.ExpBackoff
-
-	mx                     sync.RWMutex
-	allInterfaceAddrs      []ma.Multiaddr
-	filteredInterfaceAddrs []ma.Multiaddr
+	wg         sync.WaitGroup
+	ifaceAddrs *addrsCache
+	allAddrs   *addrsCache
 }
 
 func NewAddressService(h *BasicHost, natmgr func(network.Network) NATManager,
@@ -79,8 +75,23 @@ func NewAddressService(h *BasicHost, natmgr func(network.Network) NATManager,
 		addrChangeChan:          make(chan struct{}, 1),
 		ctx:                     ctx,
 		ctxCancel:               cancel,
+		ifaceAddrs: &addrsCache{
+			F: func() []ma.Multiaddr {
+				addr, err := manet.InterfaceMultiaddrs()
+				if err != nil {
+					log.Error("failed to get iface addrs: %s", err)
+					return nil
+				}
+				return addr
+			},
+			TTL: time.Minute,
+		},
 	}
-	as.updateLocalIpAddr()
+	as.allAddrs = &addrsCache{
+		F:   as.getAllAddrs,
+		TTL: 1 * time.Minute,
+	}
+
 	if !as.disableSignedPeerRecord {
 		cab, ok := peerstore.GetCertifiedAddrBook(as.peerstore)
 		if !ok {
@@ -123,6 +134,7 @@ func (a *addressService) Close() {
 }
 
 func (a *addressService) SignalAddressChange() {
+	a.allAddrs.Clear()
 	select {
 	case a.addrChangeChan <- struct{}{}:
 	default:
@@ -172,10 +184,7 @@ func (a *addressService) background() {
 	defer ticker.Stop()
 
 	for {
-		// Update our local IP addresses before checking our current addresses.
-		if len(a.s.ListenAddresses()) > 0 {
-			a.updateLocalIpAddr()
-		}
+		a.allAddrs.Clear()
 		curr := a.Addrs()
 		emitAddrChange(curr, lastAddrs)
 		lastAddrs = curr
@@ -220,34 +229,24 @@ var p2pCircuitAddr = ma.StringCast("/p2p-circuit")
 
 // AllAddrs returns all the addresses the host is listening on except circuit addresses.
 func (a *addressService) AllAddrs() []ma.Multiaddr {
+	return slices.Clone(a.allAddrs.Get())
+}
+
+func (a *addressService) getAllAddrs() []ma.Multiaddr {
 	listenAddrs := a.s.ListenAddresses()
 	if len(listenAddrs) == 0 {
 		return nil
 	}
-
-	a.mx.RLock()
-	filteredIfaceAddrs := a.filteredInterfaceAddrs
-	allIfaceAddrs := a.allInterfaceAddrs
-	a.mx.RUnlock()
-
-	// Iterate over all _unresolved_ listen addresses, resolving our primary
-	// interface only to avoid advertising too many addresses.
 	finalAddrs := make([]ma.Multiaddr, 0, 8)
-	if resolved, err := manet.ResolveUnspecifiedAddresses(listenAddrs, filteredIfaceAddrs); err != nil {
-		// This can happen if we're listening on no addrs, or listening
-		// on IPv6 addrs, but only have IPv4 interface addrs.
-		log.Debugw("failed to resolve listen addrs", "error", err)
-	} else {
-		finalAddrs = append(finalAddrs, resolved...)
+	ifaceListenAddrs, err := a.s.InterfaceListenAddresses()
+	if err == nil {
+		finalAddrs = append(finalAddrs, ifaceListenAddrs...)
 	}
-
-	finalAddrs = ma.Unique(finalAddrs)
 
 	// use nat mappings if we have them
 	if a.natmgr != nil && a.natmgr.HasDiscoveredNAT() {
 		// We have successfully mapped ports on our NAT. Use those
 		// instead of observed addresses (mostly).
-		// Next, apply this mapping to our addresses.
 		for _, listen := range listenAddrs {
 			extMaddr := a.natmgr.GetMapping(listen)
 			if extMaddr == nil {
@@ -272,7 +271,7 @@ func (a *addressService) AllAddrs() []ma.Multiaddr {
 			// No.
 			// in case the router gives us a wrong address or we're behind a double-NAT.
 			// also add observed addresses
-			resolved, err := manet.ResolveUnspecifiedAddress(listen, allIfaceAddrs)
+			resolved, err := manet.ResolveUnspecifiedAddress(listen, a.ifaceAddrs.Get())
 			if err != nil {
 				// This can happen if we try to resolve /ip6/::/...
 				// without any IPv6 interface addresses.
@@ -322,88 +321,6 @@ func (a *addressService) AllAddrs() []ma.Multiaddr {
 	// using identify.
 	finalAddrs = a.addCertHashes(finalAddrs)
 	return finalAddrs
-}
-
-func (a *addressService) updateLocalIpAddr() {
-	a.mx.Lock()
-	defer a.mx.Unlock()
-
-	a.filteredInterfaceAddrs = nil
-	a.allInterfaceAddrs = nil
-
-	// Try to use the default ipv4/6 addresses.
-	// TODO: Remove this. We should advertise all interface addresses.
-	if r, err := netroute.New(); err != nil {
-		log.Debugw("failed to build Router for kernel's routing table", "error", err)
-	} else {
-
-		var localIPv4 net.IP
-		var ran bool
-		err, ran = a.updateLocalIPv4Backoff.Run(func() error {
-			_, _, localIPv4, err = r.Route(net.IPv4zero)
-			return err
-		})
-
-		if ran && err != nil {
-			log.Debugw("failed to fetch local IPv4 address", "error", err)
-		} else if ran && localIPv4.IsGlobalUnicast() {
-			maddr, err := manet.FromIP(localIPv4)
-			if err == nil {
-				a.filteredInterfaceAddrs = append(a.filteredInterfaceAddrs, maddr)
-			}
-		}
-
-		var localIPv6 net.IP
-		err, ran = a.updateLocalIPv6Backoff.Run(func() error {
-			_, _, localIPv6, err = r.Route(net.IPv6unspecified)
-			return err
-		})
-
-		if ran && err != nil {
-			log.Debugw("failed to fetch local IPv6 address", "error", err)
-		} else if ran && localIPv6.IsGlobalUnicast() {
-			maddr, err := manet.FromIP(localIPv6)
-			if err == nil {
-				a.filteredInterfaceAddrs = append(a.filteredInterfaceAddrs, maddr)
-			}
-		}
-	}
-
-	// Resolve the interface addresses
-	ifaceAddrs, err := manet.InterfaceMultiaddrs()
-	if err != nil {
-		// This usually shouldn't happen, but we could be in some kind
-		// of funky restricted environment.
-		log.Errorw("failed to resolve local interface addresses", "error", err)
-
-		// Add the loopback addresses to the filtered addrs and use them as the non-filtered addrs.
-		// Then bail. There's nothing else we can do here.
-		a.filteredInterfaceAddrs = append(a.filteredInterfaceAddrs, manet.IP4Loopback, manet.IP6Loopback)
-		a.allInterfaceAddrs = a.filteredInterfaceAddrs
-		return
-	}
-
-	for _, addr := range ifaceAddrs {
-		// Skip link-local addrs, they're mostly useless.
-		if !manet.IsIP6LinkLocal(addr) {
-			a.allInterfaceAddrs = append(a.allInterfaceAddrs, addr)
-		}
-	}
-
-	// If netroute failed to get us any interface addresses, use all of
-	// them.
-	if len(a.filteredInterfaceAddrs) == 0 {
-		// Add all addresses.
-		a.filteredInterfaceAddrs = a.allInterfaceAddrs
-	} else {
-		// Only add loopback addresses. Filter these because we might
-		// not _have_ an IPv6 loopback address.
-		for _, addr := range a.allInterfaceAddrs {
-			if manet.IsIPLoopback(addr) {
-				a.filteredInterfaceAddrs = append(a.filteredInterfaceAddrs, addr)
-			}
-		}
-	}
 }
 
 func (a *addressService) addCertHashes(addrs []ma.Multiaddr) []ma.Multiaddr {
@@ -548,4 +465,40 @@ func trimHostAddrList(addrs []ma.Multiaddr, maxSize int) []ma.Multiaddr {
 		}
 	}
 	return addrs
+}
+
+type addrsCache struct {
+	F           func() []ma.Multiaddr
+	TTL         time.Duration
+	mx          sync.RWMutex
+	lastUpdated time.Time
+	addrs       []ma.Multiaddr
+}
+
+func (a *addrsCache) Get() []ma.Multiaddr {
+	a.mx.RLock()
+	if time.Now().After(a.lastUpdated.Add(a.TTL)) {
+		a.mx.RUnlock()
+		return a.update()
+	}
+	defer a.mx.RUnlock()
+	return a.addrs
+}
+
+func (a *addrsCache) update() []ma.Multiaddr {
+	a.mx.Lock()
+	defer a.mx.Unlock()
+	if !time.Now().After(a.lastUpdated.Add(a.TTL)) {
+		return a.addrs
+	}
+	a.addrs = a.F()
+	a.lastUpdated = time.Now()
+	return a.addrs
+}
+
+func (a *addrsCache) Clear() {
+	a.mx.Lock()
+	defer a.mx.Unlock()
+	a.lastUpdated = time.Time{}
+	return
 }
