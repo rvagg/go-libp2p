@@ -206,29 +206,6 @@ func TestHostAddrsFactory(t *testing.T) {
 	}
 }
 
-func TestLocalIPChangesWhenListenAddrChanges(t *testing.T) {
-	// no listen addrs
-	h, err := NewHost(swarmt.GenSwarm(t, swarmt.OptDialOnly), nil)
-	require.NoError(t, err)
-	h.Start()
-	defer h.Close()
-
-	h.addressService.mx.Lock()
-	h.addressService.filteredInterfaceAddrs = nil
-	h.addressService.allInterfaceAddrs = nil
-	h.addressService.mx.Unlock()
-
-	// change listen addrs and verify local IP addr is not nil again
-	require.NoError(t, h.Network().Listen(ma.StringCast("/ip4/0.0.0.0/tcp/0")))
-	h.SignalAddressChange()
-	time.Sleep(1 * time.Second)
-
-	h.addrMu.RLock()
-	defer h.addrMu.RUnlock()
-	require.NotEmpty(t, h.addressService.filteredInterfaceAddrs)
-	require.NotEmpty(t, h.addressService.allInterfaceAddrs)
-}
-
 func TestAllAddrs(t *testing.T) {
 	// no listen addrs
 	h, err := NewHost(swarmt.GenSwarm(t, swarmt.OptDialOnly), nil)

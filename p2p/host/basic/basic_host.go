@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 
 	logging "github.com/ipfs/go-log/v2"
 	ma "github.com/multiformats/go-multiaddr"
+	manet "github.com/multiformats/go-multiaddr/net"
 	msmux "github.com/multiformats/go-multistream"
 )
 
@@ -97,7 +99,6 @@ type BasicHost struct {
 	autoNat autonat.AutoNAT
 
 	autonatv2      *autonatv2.AutoNAT
-	addrSub        event.Subscription
 	autorelay      *autorelay.AutoRelay
 	addressService *addressService
 }
@@ -180,11 +181,6 @@ func NewHost(n network.Network, opts *HostOpts) (*BasicHost, error) {
 		return nil, err
 	}
 
-	addrSub, err := opts.EventBus.Subscribe(new(event.EvtAutoRelayAddrs))
-	if err != nil {
-		return nil, err
-	}
-
 	hostCtx, cancel := context.WithCancel(context.Background())
 	h := &BasicHost{
 		network:                 n,
@@ -195,7 +191,6 @@ func NewHost(n network.Network, opts *HostOpts) (*BasicHost, error) {
 		ctx:                     hostCtx,
 		ctxCancel:               cancel,
 		disableSignedPeerRecord: opts.DisableSignedPeerRecord,
-		addrSub:                 addrSub,
 	}
 
 	if h.emitters.evtLocalProtocolsUpdated, err = h.eventbus.Emitter(&event.EvtLocalProtocolsUpdated{}, eventbus.Stateful); err != nil {
@@ -596,7 +591,6 @@ func (h *BasicHost) Connect(ctx context.Context, pi peer.AddrInfo) error {
 			return nil
 		}
 	}
-
 	return h.dialPeer(ctx, pi.ID)
 }
 
@@ -726,6 +720,58 @@ func (h *BasicHost) Close() error {
 	})
 
 	return nil
+}
+
+func trimHostAddrList(addrs []ma.Multiaddr, maxSize int) []ma.Multiaddr {
+	totalSize := 0
+	for _, a := range addrs {
+		totalSize += len(a.Bytes())
+	}
+	if totalSize <= maxSize {
+		return addrs
+	}
+
+	score := func(addr ma.Multiaddr) int {
+		var res int
+		if manet.IsPublicAddr(addr) {
+			res |= 1 << 12
+		} else if !manet.IsIPLoopback(addr) {
+			res |= 1 << 11
+		}
+		var protocolWeight int
+		ma.ForEach(addr, func(c ma.Component) bool {
+			switch c.Protocol().Code {
+			case ma.P_QUIC_V1:
+				protocolWeight = 5
+			case ma.P_TCP:
+				protocolWeight = 4
+			case ma.P_WSS:
+				protocolWeight = 3
+			case ma.P_WEBTRANSPORT:
+				protocolWeight = 2
+			case ma.P_WEBRTC_DIRECT:
+				protocolWeight = 1
+			case ma.P_P2P:
+				return false
+			}
+			return true
+		})
+		res |= 1 << protocolWeight
+		return res
+	}
+
+	slices.SortStableFunc(addrs, func(a, b ma.Multiaddr) int {
+		return score(b) - score(a) // b-a for reverse order
+	})
+	totalSize = 0
+	for i, a := range addrs {
+		totalSize += len(a.Bytes())
+		if totalSize > maxSize {
+			addrs = addrs[:i]
+			break
+		}
+	}
+	return addrs
 }
 
 type streamWrapper struct {
