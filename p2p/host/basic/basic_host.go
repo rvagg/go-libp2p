@@ -94,7 +94,6 @@ type BasicHost struct {
 
 	disableSignedPeerRecord bool
 	signKey                 crypto.PrivKey
-	caBook                  peerstore.CertifiedAddrBook
 
 	autoNat autonat.AutoNAT
 

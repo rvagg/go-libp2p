@@ -19,7 +19,6 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	"github.com/libp2p/go-libp2p/p2p/host/basic/internal/backoff"
 	"github.com/libp2p/go-libp2p/p2p/host/eventbus"
-	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
 	libp2pwebtransport "github.com/libp2p/go-libp2p/p2p/transport/webtransport"
 	"github.com/libp2p/go-netroute"
@@ -29,28 +28,29 @@ import (
 
 type peerRecordFunc func([]ma.Multiaddr) (*record.Envelope, error)
 
+type observedAddrsService interface {
+	OwnObservedAddrs() []ma.Multiaddr
+	ObservedAddrsFor(local ma.Multiaddr) []ma.Multiaddr
+}
+
 type addressService struct {
-	s                       network.Network
-	natmgr                  NATManager
-	ids                     identify.IDService
-	peerRecord              peerRecordFunc
-	disableSignedPeerRecord bool
-	peerstore               peerstore.Peerstore
-	id                      peer.ID
-	autonat                 autonat.AutoNAT
-	emitter                 event.Emitter
-	autorelay               *autorelay.AutoRelay
-	addrsFactory            AddrsFactory
-	addrChangeChan          chan struct{}
-	relayAddrsSub           event.Subscription
-	ctx                     context.Context
-	ctxCancel               context.CancelFunc
-
-	wg                     sync.WaitGroup
-	updateLocalIPv4Backoff backoff.ExpBackoff
-	updateLocalIPv6Backoff backoff.ExpBackoff
-
-	ifaceAddrs *interfaceAddrsCache
+	net          network.Network
+	peerstore    peerstore.Peerstore
+	id           peer.ID
+	addrsFactory AddrsFactory
+	// peerRecord is used to create peer records when the addresses change
+	peerRecord           peerRecordFunc
+	autonat              autonat.AutoNAT
+	autorelay            *autorelay.AutoRelay
+	natmgr               NATManager
+	observedAddrsService observedAddrsService
+	addrChangeChan       chan struct{}
+	relayAddrsSub        event.Subscription
+	emitter              event.Emitter
+	ifaceAddrs           *interfaceAddrsCache
+	wg                   sync.WaitGroup
+	ctx                  context.Context
+	ctxCancel            context.CancelFunc
 }
 
 func NewAddressService(h *BasicHost, natmgr func(network.Network) NATManager,
@@ -67,30 +67,32 @@ func NewAddressService(h *BasicHost, natmgr func(network.Network) NATManager,
 	if err != nil {
 		return nil, err
 	}
+	peerRecord := h.makeSignedPeerRecord
+	if !h.disableSignedPeerRecord {
+		peerRecord = nil
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	as := &addressService{
-		s:                       h.Network(),
-		ids:                     h.IDService(),
-		peerRecord:              h.makeSignedPeerRecord,
-		disableSignedPeerRecord: h.disableSignedPeerRecord,
-		peerstore:               h.Peerstore(),
-		id:                      h.ID(),
-		natmgr:                  nmgr,
-		emitter:                 emitter,
-		autorelay:               h.autorelay,
-		addrsFactory:            addrFactory,
-		addrChangeChan:          make(chan struct{}, 1),
-		relayAddrsSub:           addrSub,
-		ctx:                     ctx,
-		ctxCancel:               cancel,
-		ifaceAddrs:              &interfaceAddrsCache{},
+		net:                  h.Network(),
+		peerstore:            h.Peerstore(),
+		observedAddrsService: h.IDService(),
+		id:                   h.ID(),
+		peerRecord:           peerRecord,
+		natmgr:               nmgr,
+		emitter:              emitter,
+		autorelay:            h.autorelay,
+		addrsFactory:         addrFactory,
+		addrChangeChan:       make(chan struct{}, 1),
+		relayAddrsSub:        addrSub,
+		ctx:                  ctx,
+		ctxCancel:            cancel,
+		ifaceAddrs:           &interfaceAddrsCache{},
 	}
-	if !as.disableSignedPeerRecord {
+	if as.peerRecord != nil {
 		cab, ok := peerstore.GetCertifiedAddrBook(as.peerstore)
 		if !ok {
 			return nil, errors.New("peerstore should also be a certified address book")
 		}
-		h.caBook = cab
 		rec, err := as.peerRecord(as.Addrs())
 		if err != nil {
 			return nil, fmt.Errorf("failed to create signed record for self: %w", err)
@@ -124,6 +126,10 @@ func (a *addressService) Close() {
 	if err != nil {
 		log.Warnf("error closing addrs update emitter: %s", err)
 	}
+	err = a.relayAddrsSub.Close()
+	if err != nil {
+		log.Warnf("error closing addrs update emitter: %s", err)
+	}
 }
 
 func (a *addressService) SignalAddressChange() {
@@ -131,7 +137,6 @@ func (a *addressService) SignalAddressChange() {
 	case a.addrChangeChan <- struct{}{}:
 	default:
 	}
-
 }
 
 func (a *addressService) background() {
@@ -145,7 +150,7 @@ func (a *addressService) background() {
 		}
 		// Our addresses have changed.
 		// store the signed peer record in the peer store.
-		if !a.disableSignedPeerRecord {
+		if a.peerRecord != nil {
 			cabook, ok := peerstore.GetCertifiedAddrBook(a.peerstore)
 			if !ok {
 				log.Errorf("peerstore doesn't implement certified address book")
@@ -212,7 +217,7 @@ func (a *addressService) GetHolePunchAddrs() []ma.Multiaddr {
 	addrs = slices.Clone(a.addrsFactory(addrs))
 	// AllAddrs may ignore observed addresses in favour of NAT mappings.
 	// Use both for hole punching.
-	addrs = append(addrs, a.ids.OwnObservedAddrs()...)
+	addrs = append(addrs, a.observedAddrsService.OwnObservedAddrs()...)
 	addrs = ma.Unique(addrs)
 	return slices.DeleteFunc(addrs, func(a ma.Multiaddr) bool { return !manet.IsPublicAddr(a) })
 }
@@ -221,96 +226,20 @@ var p2pCircuitAddr = ma.StringCast("/p2p-circuit")
 
 // AllAddrs returns all the addresses the host is listening on except circuit addresses.
 func (a *addressService) AllAddrs() []ma.Multiaddr {
-	listenAddrs := a.s.ListenAddresses()
+	listenAddrs := a.net.ListenAddresses()
 	if len(listenAddrs) == 0 {
 		return nil
 	}
 
-	filteredIfaceAddrs := a.ifaceAddrs.Filtered()
-
-	// Iterate over all _unresolved_ listen addresses, resolving our primary
-	// interface only to avoid advertising too many addresses.
 	finalAddrs := make([]ma.Multiaddr, 0, 8)
-	if resolved, err := manet.ResolveUnspecifiedAddresses(listenAddrs, filteredIfaceAddrs); err != nil {
-		// This can happen if we're listening on no addrs, or listening
-		// on IPv6 addrs, but only have IPv4 interface addrs.
-		log.Debugw("failed to resolve listen addrs", "error", err)
-	} else {
-		finalAddrs = append(finalAddrs, resolved...)
-	}
-
-	finalAddrs = ma.Unique(finalAddrs)
+	finalAddrs = a.appendInterfaceAddrs(finalAddrs, listenAddrs)
 
 	// use nat mappings if we have them
-	if a.natmgr != nil && a.natmgr.HasDiscoveredNAT() {
-		// We have successfully mapped ports on our NAT. Use those
-		// instead of observed addresses (mostly).
-		// Next, apply this mapping to our addresses.
-		for _, listen := range listenAddrs {
-			extMaddr := a.natmgr.GetMapping(listen)
-			if extMaddr == nil {
-				// not mapped
-				continue
-			}
-
-			// if the router reported a sane address
-			if !manet.IsIPUnspecified(extMaddr) {
-				// Add in the mapped addr.
-				finalAddrs = append(finalAddrs, extMaddr)
-			} else {
-				log.Warn("NAT device reported an unspecified IP as it's external address")
-			}
-
-			// Did the router give us a routable public addr?
-			if manet.IsPublicAddr(extMaddr) {
-				// well done
-				continue
-			}
-
-			// No.
-			// in case the router gives us a wrong address or we're behind a double-NAT.
-			// also add observed addresses
-			resolved, err := manet.ResolveUnspecifiedAddress(listen, a.ifaceAddrs.All())
-			if err != nil {
-				// This can happen if we try to resolve /ip6/::/...
-				// without any IPv6 interface addresses.
-				continue
-			}
-
-			for _, addr := range resolved {
-				// Now, check if we have any observed addresses that
-				// differ from the one reported by the router. Routers
-				// don't always give the most accurate information.
-				observed := a.ids.ObservedAddrsFor(addr)
-
-				if len(observed) == 0 {
-					continue
-				}
-
-				// Drop the IP from the external maddr
-				_, extMaddrNoIP := ma.SplitFirst(extMaddr)
-
-				for _, obsMaddr := range observed {
-					// Extract a public observed addr.
-					ip, _ := ma.SplitFirst(obsMaddr)
-					if ip == nil || !manet.IsPublicAddr(ip) {
-						continue
-					}
-
-					finalAddrs = append(finalAddrs, ma.Join(ip, extMaddrNoIP))
-				}
-			}
-		}
-	} else {
-		var observedAddrs []ma.Multiaddr
-		if a.ids != nil {
-			observedAddrs = a.ids.OwnObservedAddrs()
-		}
-		finalAddrs = append(finalAddrs, observedAddrs...)
-	}
+	finalAddrs = a.appendNATAddrs(finalAddrs, listenAddrs)
 	finalAddrs = ma.Unique(finalAddrs)
+
 	// Remove /p2p-circuit addresses from the list.
-	// The p2p-circuit tranport listener reports its address as just /p2p-circuit
+	// The p2p-circuit transport listener reports its address as just /p2p-circuit
 	// This is useless for dialing. Users need to manage their circuit addresses themselves,
 	// or use AutoRelay.
 	finalAddrs = slices.DeleteFunc(finalAddrs, func(a ma.Multiaddr) bool {
@@ -320,6 +249,35 @@ func (a *addressService) AllAddrs() []ma.Multiaddr {
 	// using identify.
 	finalAddrs = a.addCertHashes(finalAddrs)
 	return finalAddrs
+}
+
+func (a *addressService) appendInterfaceAddrs(result []ma.Multiaddr, listenAddrs []ma.Multiaddr) []ma.Multiaddr {
+	// resolving any unspecified listen addressees to use only the primary
+	// interface to avoid advertising too many addresses.
+	if resolved, err := manet.ResolveUnspecifiedAddresses(listenAddrs, a.ifaceAddrs.Filtered()); err != nil {
+		log.Warnw("failed to resolve listen addrs", "error", err)
+	} else {
+		result = append(result, resolved...)
+	}
+	result = ma.Unique(result)
+	return result
+}
+
+func (a *addressService) appendNATAddrs(result []ma.Multiaddr, listenAddrs []ma.Multiaddr) []ma.Multiaddr {
+	ifaceAddrs := a.ifaceAddrs.All()
+	// use nat mappings if we have them
+	if a.natmgr != nil && a.natmgr.HasDiscoveredNAT() {
+		// we have a NAT device
+		for _, listen := range listenAddrs {
+			extMaddr := a.natmgr.GetMapping(listen)
+			result = appendValidNATAddrs(result, listen, extMaddr, a.observedAddrsService.ObservedAddrsFor, ifaceAddrs)
+		}
+	} else {
+		if a.observedAddrsService != nil {
+			result = append(result, a.observedAddrsService.OwnObservedAddrs()...)
+		}
+	}
+	return result
 }
 
 func (a *addressService) addCertHashes(addrs []ma.Multiaddr) []ma.Multiaddr {
@@ -333,7 +291,7 @@ func (a *addressService) addCertHashes(addrs []ma.Multiaddr) []ma.Multiaddr {
 		AddCertHashes(m ma.Multiaddr) (ma.Multiaddr, bool)
 	}
 
-	s, ok := a.s.(transportForListeninger)
+	s, ok := a.net.(transportForListeninger)
 	if !ok {
 		return addrs
 	}
@@ -400,7 +358,7 @@ func (a *addressService) makeUpdatedAddrEvent(prev, current []ma.Multiaddr) *eve
 	}
 
 	// Our addresses have changed. Make a new signed peer record.
-	if !a.disableSignedPeerRecord {
+	if a.peerRecord != nil {
 		// add signed peer record to the event
 		sr, err := a.peerRecord(current)
 		if err != nil {
@@ -535,4 +493,60 @@ func (i *interfaceAddrsCache) updateUnlocked() {
 			}
 		}
 	}
+}
+
+func getAllPossibleLocalAddrs(listenAddr ma.Multiaddr, ifaceAddrs []ma.Multiaddr) []ma.Multiaddr {
+	// If the nat mapping fails, use the observed addrs
+	resolved, err := manet.ResolveUnspecifiedAddress(listenAddr, ifaceAddrs)
+	if err != nil {
+		log.Warnf("failed to resolve listen addr %s, %s: %s", listenAddr, ifaceAddrs, err)
+		return nil
+	}
+	return append(resolved, listenAddr)
+}
+
+// appendValidNATAddrs adds the NAT-ed addresses to the result. If the NAT device doesn't provide
+// us with a public IP address, we use the observed addresses.
+func appendValidNATAddrs(result []ma.Multiaddr, listenAddr ma.Multiaddr, natMapping ma.Multiaddr,
+	obsAddrsFunc func(ma.Multiaddr) []ma.Multiaddr,
+	ifaceAddrs []ma.Multiaddr) []ma.Multiaddr {
+	if natMapping == nil {
+		allAddrs := getAllPossibleLocalAddrs(listenAddr, ifaceAddrs)
+		for _, a := range allAddrs {
+			result = append(result, obsAddrsFunc(a)...)
+		}
+		return result
+	}
+
+	// if the router reported a sane address, use it.
+	if !manet.IsIPUnspecified(natMapping) {
+		result = append(result, natMapping)
+	} else {
+		log.Warn("NAT device reported an unspecified IP as it's external address")
+	}
+
+	// If the router gave us a public address, use it and ignore observed addresses
+	if manet.IsPublicAddr(natMapping) {
+		return result
+	}
+
+	// Router gave us a private IP; maybe we're behind a CGNAT.
+	// See if we have a public IP from observed addresses.
+	_, extMaddrNoIP := ma.SplitFirst(natMapping)
+	if extMaddrNoIP == nil {
+		return result
+	}
+
+	allAddrs := getAllPossibleLocalAddrs(listenAddr, ifaceAddrs)
+	for _, addr := range allAddrs {
+		for _, obsMaddr := range obsAddrsFunc(addr) {
+			// Extract a public observed addr.
+			ip, _ := ma.SplitFirst(obsMaddr)
+			if ip == nil || !manet.IsPublicAddr(ip) {
+				continue
+			}
+			result = append(result, ma.Join(ip, extMaddrNoIP))
+		}
+	}
+	return result
 }
