@@ -11,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
@@ -198,4 +199,27 @@ func TestAddrFactorCertHashAppend(t *testing.T) {
 		}
 		return hasWebRTC && hasWebTransport
 	}, 5*time.Second, 100*time.Millisecond)
+}
+
+func TestWebRTCDirectDialDelay(t *testing.T) {
+	// This tests that only webrtc-direct dials are dialled immediately
+	// and not delayed by dial ranker.
+
+	h1, err := libp2p.New(
+		libp2p.Transport(libp2pwebrtc.New),
+		libp2p.ListenAddrStrings(
+			"/ip4/0.0.0.0/udp/0/webrtc-direct",
+		),
+	)
+	require.NoError(t, err)
+	h2, err := libp2p.New(
+		libp2p.Transport(libp2pwebrtc.New),
+		libp2p.NoListenAddrs,
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), swarm.PrivateOtherDelay)
+	defer cancel()
+	err = h2.Connect(ctx, peer.AddrInfo{ID: h1.ID(), Addrs: h1.Addrs()})
+	require.NoError(t, err)
 }

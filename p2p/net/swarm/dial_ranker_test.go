@@ -329,6 +329,13 @@ func TestDelayRankerOtherTransportDelay(t *testing.T) {
 				{Addr: onion1, Delay: 2*PublicQUICDelay + 2*PublicOtherDelay},
 			},
 		},
+		{
+			name:  "only-non-ip-addr",
+			addrs: []ma.Multiaddr{onion1},
+			output: []network.AddrDelay{
+				{Addr: onion1, Delay: PublicOtherDelay},
+			},
+		},
 	}
 	for _, tc := range testCase {
 		t.Run(tc.name, func(t *testing.T) {
