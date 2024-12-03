@@ -9,7 +9,6 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/record"
 	"github.com/libp2p/go-libp2p/core/transport"
 	"github.com/libp2p/go-libp2p/p2p/host/basic/internal/backoff"
 	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
@@ -18,8 +17,6 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
 )
-
-type peerRecordFunc func([]ma.Multiaddr) (*record.Envelope, error)
 
 type observedAddrsService interface {
 	OwnObservedAddrs() []ma.Multiaddr
@@ -34,12 +31,13 @@ type addressService struct {
 	addrsChangeChan      chan struct{}
 	addrsUpdated         chan struct{}
 	autoRelayAddrsSub    event.Subscription
-	autoRelayAddrs       func() []ma.Multiaddr
-	reachability         func() network.Reachability
-	ifaceAddrs           *interfaceAddrsCache
-	wg                   sync.WaitGroup
-	ctx                  context.Context
-	ctxCancel            context.CancelFunc
+	// There are wrapped in to functions for mocking
+	autoRelayAddrs func() []ma.Multiaddr
+	reachability   func() network.Reachability
+	ifaceAddrs     *interfaceAddrsCache
+	wg             sync.WaitGroup
+	ctx            context.Context
+	ctxCancel      context.CancelFunc
 }
 
 func NewAddressService(h *BasicHost, natmgr func(network.Network) NATManager,
