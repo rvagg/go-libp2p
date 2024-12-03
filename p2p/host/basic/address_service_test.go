@@ -89,7 +89,7 @@ func TestAppendNATAddrs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
-			res := appendValidNATAddrs(nil,
+			res := appendNATAddrsForListenAddrs(nil,
 				tc.Listen, tc.Nat, tc.ObsAddrFunc, ifaceAddrs)
 			res = ma.Unique(res)
 			require.ElementsMatch(t, tc.Expected, res, "%s\n%s", tc.Expected, res)

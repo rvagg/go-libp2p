@@ -81,8 +81,6 @@ type BasicHost struct {
 	eventbus     event.Bus
 	relayManager *relaysvc.RelayManager
 
-	AddrsFactory AddrsFactory
-
 	negtimeout time.Duration
 
 	emitters struct {
@@ -90,12 +88,11 @@ type BasicHost struct {
 		evtLocalAddrsUpdated     event.Emitter
 	}
 
-	addrMu sync.RWMutex
-
 	disableSignedPeerRecord bool
 	signKey                 crypto.PrivKey
 
-	autoNat autonat.AutoNAT
+	autoNATMx sync.RWMutex
+	autoNat   autonat.AutoNAT
 
 	autonatv2      *autonatv2.AutoNAT
 	autorelay      *autorelay.AutoRelay
@@ -193,6 +190,9 @@ func NewHost(n network.Network, opts *HostOpts) (*BasicHost, error) {
 	}
 
 	if h.emitters.evtLocalProtocolsUpdated, err = h.eventbus.Emitter(&event.EvtLocalProtocolsUpdated{}, eventbus.Stateful); err != nil {
+		return nil, err
+	}
+	if h.emitters.evtLocalAddrsUpdated, err = h.eventbus.Emitter(&event.EvtLocalAddressesUpdated{}, eventbus.Stateful); err != nil {
 		return nil, err
 	}
 
@@ -304,10 +304,24 @@ func NewHost(n network.Network, opts *HostOpts) (*BasicHost, error) {
 
 	n.SetStreamHandler(h.newStreamHandler)
 
+	if !h.disableSignedPeerRecord {
+		cab, ok := peerstore.GetCertifiedAddrBook(h.Peerstore())
+		if !ok {
+			return nil, errors.New("peerstore should also be a certified address book")
+		}
+		rec, err := h.makeSignedPeerRecord(h.addressService.Addrs())
+		if err != nil {
+			return nil, fmt.Errorf("failed to create signed record for self: %w", err)
+		}
+		if _, err := cab.ConsumePeerRecord(rec, peerstore.PermanentAddrTTL); err != nil {
+			return nil, fmt.Errorf("failed to persist signed record to peerstore: %w", err)
+		}
+	}
+
 	// register to be notified when the network's listen addrs change,
 	// so we can update our address set and push events if needed
 	listenHandler := func(network.Network, ma.Multiaddr) {
-		h.SignalAddressChange()
+		h.addressService.SignalAddressChange()
 	}
 	n.Notify(&network.NotifyBundle{
 		ListenF:      listenHandler,
@@ -330,7 +344,10 @@ func (h *BasicHost) Start() {
 			log.Errorf("autonat v2 failed to start: %s", err)
 		}
 	}
+	h.refCount.Add(1)
+	go h.background()
 	h.addressService.Start()
+
 }
 
 // newStreamHandler is the remote-opened stream handler for network.Network
@@ -381,11 +398,105 @@ func (h *BasicHost) newStreamHandler(s network.Stream) {
 	handle(protoID, s)
 }
 
-// SignalAddressChange signals to the host that it needs to determine whether our listen addresses have recently
-// changed.
-// Warning: this interface is unstable and may disappear in the future.
-func (h *BasicHost) SignalAddressChange() {
-	h.addressService.SignalAddressChange()
+func (h *BasicHost) background() {
+	defer h.refCount.Done()
+	var lastAddrs []ma.Multiaddr
+
+	// TODO: Deprecate this event and logic
+	emitAddrChange := func(currentAddrs []ma.Multiaddr, lastAddrs []ma.Multiaddr) {
+		changeEvt := h.makeUpdatedAddrEvent(lastAddrs, currentAddrs)
+		if changeEvt == nil {
+			return
+		}
+		// Our addresses have changed.
+		// store the signed peer record in the peer store.
+		if !h.disableSignedPeerRecord {
+			cabook, ok := peerstore.GetCertifiedAddrBook(h.Peerstore())
+			if !ok {
+				log.Errorf("peerstore doesn't implement certified address book")
+				return
+			}
+			if _, err := cabook.ConsumePeerRecord(changeEvt.SignedPeerRecord, peerstore.PermanentAddrTTL); err != nil {
+				log.Errorf("failed to persist signed peer record in peer store, err=%s", err)
+				return
+			}
+		}
+		// update host addresses in the peer store
+		removedAddrs := make([]ma.Multiaddr, 0, len(changeEvt.Removed))
+		for _, ua := range changeEvt.Removed {
+			removedAddrs = append(removedAddrs, ua.Address)
+		}
+		h.Peerstore().SetAddrs(h.ID(), currentAddrs, peerstore.PermanentAddrTTL)
+		h.Peerstore().SetAddrs(h.ID(), removedAddrs, 0)
+
+		// emit addr change event
+		if err := h.emitters.evtLocalAddrsUpdated.Emit(*changeEvt); err != nil {
+			log.Warnf("error emitting event for updated addrs: %s", err)
+		}
+	}
+
+	for {
+		curr := h.Addrs()
+		emitAddrChange(curr, lastAddrs)
+		lastAddrs = curr
+
+		select {
+		case <-h.addressService.AddrsUpdated():
+		case <-h.ctx.Done():
+			return
+		}
+	}
+}
+
+func (h *BasicHost) makeUpdatedAddrEvent(prev, current []ma.Multiaddr) *event.EvtLocalAddressesUpdated {
+	if prev == nil && current == nil {
+		return nil
+	}
+	prevmap := make(map[string]ma.Multiaddr, len(prev))
+	currmap := make(map[string]ma.Multiaddr, len(current))
+	evt := &event.EvtLocalAddressesUpdated{Diffs: true}
+	addrsAdded := false
+
+	for _, addr := range prev {
+		prevmap[string(addr.Bytes())] = addr
+	}
+	for _, addr := range current {
+		currmap[string(addr.Bytes())] = addr
+	}
+	for _, addr := range currmap {
+		_, ok := prevmap[string(addr.Bytes())]
+		updated := event.UpdatedAddress{Address: addr}
+		if ok {
+			updated.Action = event.Maintained
+		} else {
+			updated.Action = event.Added
+			addrsAdded = true
+		}
+		evt.Current = append(evt.Current, updated)
+		delete(prevmap, string(addr.Bytes()))
+	}
+	for _, addr := range prevmap {
+		updated := event.UpdatedAddress{Action: event.Removed, Address: addr}
+		evt.Removed = append(evt.Removed, updated)
+	}
+
+	if !addrsAdded && len(evt.Removed) == 0 {
+		return nil
+	}
+
+	// Our addresses have changed. Make a new signed peer record.
+	if !h.disableSignedPeerRecord {
+		// add signed peer record to the event
+		sr, err := h.makeSignedPeerRecord(current)
+		if err != nil {
+			log.Errorf("error creating a signed peer record from the set of current addresses, err=%s", err)
+			// drop this change
+			return nil
+		}
+		evt.SignedPeerRecord = sr
+	}
+
+	return evt
 }
 
 func (h *BasicHost) makeSignedPeerRecord(addrs []ma.Multiaddr) (*record.Envelope, error) {
@@ -653,18 +764,17 @@ func (h *BasicHost) AllAddrs() []ma.Multiaddr {
 
 // SetAutoNat sets the autonat service for the host.
 func (h *BasicHost) SetAutoNat(a autonat.AutoNAT) {
-	h.addrMu.Lock()
-	defer h.addrMu.Unlock()
+	h.autoNATMx.Lock()
+	defer h.autoNATMx.Unlock()
 	if h.autoNat == nil {
 		h.autoNat = a
 	}
-	h.addressService.SetAutoNAT(h.autoNat)
 }
 
 // GetAutoNat returns the host's AutoNAT service, if AutoNAT is enabled.
 func (h *BasicHost) GetAutoNat() autonat.AutoNAT {
-	h.addrMu.Lock()
-	defer h.addrMu.Unlock()
+	h.autoNATMx.Lock()
+	defer h.autoNATMx.Unlock()
 	return h.autoNat
 }
 
