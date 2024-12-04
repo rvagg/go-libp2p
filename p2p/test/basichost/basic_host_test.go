@@ -207,7 +207,6 @@ func TestAddrFactorCertHashAppend(t *testing.T) {
 func TestWebRTCDirectDialDelay(t *testing.T) {
 	// This tests that only webrtc-direct dials are dialled immediately
 	// and not delayed by dial ranker.
-
 	h1, err := libp2p.New(
 		libp2p.Transport(libp2pwebrtc.New),
 		libp2p.ListenAddrStrings(
@@ -228,6 +227,8 @@ func TestWebRTCDirectDialDelay(t *testing.T) {
 }
 
 func TestWebRTCWithQUICManyConnections(t *testing.T) {
+	// Correctly fixes: https://github.com/libp2p/js-libp2p/issues/2805
+
 	h, err := libp2p.New(
 		libp2p.Transport(libp2pquic.NewTransport),
 		libp2p.Transport(libp2pwebrtc.New),
