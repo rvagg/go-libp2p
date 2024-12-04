@@ -71,8 +71,11 @@ type ManetTCPConnInterface interface {
 
 func newFallbackSampledConn(conn ManetTCPConnInterface) (PeekedBytes, *fallbackPeekingConn, error) {
 	s := &fallbackPeekingConn{ManetTCPConnInterface: conn}
-	_, err := io.ReadFull(conn, s.peekedBytes[:])
+	n, err := io.ReadFull(conn, s.peekedBytes[:])
 	if err != nil {
+		if n == 0 && err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return s.peekedBytes, nil, err
 	}
 	return s.peekedBytes, s, nil
