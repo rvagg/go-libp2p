@@ -4,6 +4,7 @@ package sampledconn
 
 import (
 	"errors"
+	"io"
 	"syscall"
 )
 
@@ -15,27 +16,20 @@ func OSPeekConn(conn syscall.Conn) (PeekedBytes, error) {
 		return s, err
 	}
 
-	readBytes := 0
 	var readErr error
+	var n int
 	err = rawConn.Read(func(fd uintptr) bool {
-		for readBytes < peekSize {
-			var n int
-			n, _, readErr = syscall.Recvfrom(int(fd), s[readBytes:], syscall.MSG_PEEK)
-			if errors.Is(readErr, syscall.EAGAIN) {
-				return false
-			}
-			if readErr != nil {
-				return true
-			}
-			readBytes += n
-		}
-		return true
+		n, _, readErr = syscall.Recvfrom(int(fd), s[:], syscall.MSG_PEEK|syscall.MSG_WAITALL)
+		return !errors.Is(readErr, syscall.EAGAIN)
 	})
+	if err != nil {
+		return s, err
+	}
 	if readErr != nil {
 		return s, readErr
 	}
-	if err != nil {
-		return s, err
+	if n < peekSize {
+		return s, io.ErrUnexpectedEOF
 	}
 
 	return s, nil
