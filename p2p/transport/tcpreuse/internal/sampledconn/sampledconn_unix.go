@@ -17,14 +17,14 @@ func isClosed(rawConn syscall.RawConn) bool {
 		pollFd := []unix.PollFd{
 			{
 				Fd:      int32(fd),
-				Events:  unix.POLLIN | unix.POLLERR | unix.POLLHUP,
+				Events:  unix.POLLERR | unix.POLLHUP | unix.POLLRDHUP,
 				Revents: 0,
 			},
 		}
 
 		// Call poll with a timeout of 0 for non-blocking behavior
 		n, err := unix.Poll(pollFd, 0)
-		if err != nil || (n > 0 && (pollFd[0].Revents&(unix.POLLERR|unix.POLLHUP) != 0)) {
+		if err != nil || (n > 0 && (pollFd[0].Revents != 0)) {
 			isClosed = true // Error or hang-up event detected
 		}
 	})
