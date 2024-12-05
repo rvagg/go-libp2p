@@ -1,4 +1,4 @@
-//go:build !unix
+//go:build !windows && !linux && !darwin
 
 package sampledconn
 
