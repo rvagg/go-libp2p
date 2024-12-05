@@ -17,7 +17,7 @@ func isClosed(rawConn syscall.RawConn) bool {
 		pollFd := []unix.PollFd{
 			{
 				Fd:      int32(fd),
-				Events:  unix.POLLERR | unix.POLLHUP | unix.POLLRDHUP,
+				Events:  pollFlags,
 				Revents: 0,
 			},
 		}
