@@ -10,27 +10,26 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// updateBlocking updates the blocking mode of the file descriptor.
-// It returns true if the blocking mode was changed, and false if it was already in the desired mode.
-// If an error occurs, it returns the error.
-func updateBlocking(fd uintptr, shouldBlock bool) (bool, error) {
-	flags, err := unix.FcntlInt(fd, syscall.F_GETFL, 0)
-	if err != nil {
-		return false, err
-	}
-	if shouldBlock && flags&syscall.O_NONBLOCK != 0 {
-		// Clear O_NONBLOCK flag
-		flags &^= unix.O_NONBLOCK
-		_, err = unix.FcntlInt(fd, unix.F_SETFL, flags)
-		return true, err
-	}
-	if !shouldBlock && flags&syscall.O_NONBLOCK == 0 {
-		// Set O_NONBLOCK flag
-		flags |= unix.O_NONBLOCK
-		_, err = unix.FcntlInt(fd, unix.F_SETFL, flags)
-		return true, err
-	}
-	return false, nil
+func isClosed(rawConn syscall.RawConn) bool {
+	var isClosed bool
+	_ = rawConn.Control(func(fd uintptr) {
+		// Create pollfd struct for the file descriptor
+		pollFd := []unix.PollFd{
+			{
+				Fd:      int32(fd),
+				Events:  unix.POLLIN | unix.POLLERR | unix.POLLHUP,
+				Revents: 0,
+			},
+		}
+
+		// Call poll with a timeout of 0 for non-blocking behavior
+		n, err := unix.Poll(pollFd, 0)
+		if err != nil || (n > 0 && (pollFd[0].Revents&(unix.POLLERR|unix.POLLHUP) != 0)) {
+			isClosed = true // Error or hang-up event detected
+		}
+	})
+
+	return isClosed
 }
 
 func OSPeekConn(conn syscall.Conn) (PeekedBytes, error) {
@@ -41,29 +40,31 @@ func OSPeekConn(conn syscall.Conn) (PeekedBytes, error) {
 		return s, err
 	}
 
-	var updatedBlocking bool
-	ctlErr := rawConn.Control(func(fd uintptr) {
-		updatedBlocking, err = updateBlocking(fd, true)
-	})
-	if ctlErr != nil {
-		return s, ctlErr
-	}
-	if err != nil {
-		return s, err
-	}
-	if updatedBlocking {
-		defer func() {
-			_ = rawConn.Control(func(fd uintptr) {
-				_, _ = updateBlocking(fd, false)
-			})
-		}()
-	}
-
 	var readErr error
 	var n int
 	err = rawConn.Read(func(fd uintptr) bool {
-		n, _, readErr = syscall.Recvfrom(int(fd), s[:], syscall.MSG_PEEK|syscall.MSG_WAITALL)
-		return !errors.Is(readErr, syscall.EAGAIN)
+		n, _, readErr = syscall.Recvfrom(int(fd), s[:], syscall.MSG_PEEK)
+		if errors.Is(readErr, syscall.EAGAIN) {
+			// We always retry if we get an EAGAIN err
+			return false
+		}
+
+		if n >= peekSize {
+			// We're done!
+			return true
+		}
+
+		if n == 0 && readErr == nil {
+			// Connection closed.
+			return true
+		}
+
+		// We have peeked some bytes, we need to check explicitly if the connection
+		// is already closed. If it is, we will not unblock from our pollWait.
+		if isClosed(rawConn) {
+			return true
+		}
+		return false
 	})
 	if err != nil {
 		return s, err
