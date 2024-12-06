@@ -64,7 +64,7 @@ func TestSampledConn(t *testing.T) {
 				assert.Equal(t, "hello", string(buf))
 			} else {
 				// Wrap the client connection in SampledConn
-				sample, sampledConn, err := newFallbackSampledConn(clientConn.(ManetTCPConnInterface))
+				sample, sampledConn, err := wrappedSampledConn(clientConn.(ManetTCPConnInterface))
 				assert.NoError(t, err)
 				assert.Equal(t, "hel", string(sample[:]))
 

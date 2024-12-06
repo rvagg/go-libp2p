@@ -19,19 +19,8 @@ var errNotSupported = errors.New("not supported on this platform")
 var ErrNotTCPConn = errors.New("passed conn is not a TCPConn")
 
 func PeekBytes(conn manet.Conn) (PeekedBytes, manet.Conn, error) {
-	if c, ok := conn.(syscall.Conn); ok {
-		b, err := OSPeekConn(c)
-		if err == nil {
-			return b, conn, nil
-		}
-		if err != errNotSupported {
-			return PeekedBytes{}, nil, err
-		}
-		// Fallback to wrapping the coonn
-	}
-
 	if c, ok := conn.(ManetTCPConnInterface); ok {
-		return newFallbackSampledConn(c)
+		return wrappedSampledConn(c)
 	}
 
 	return PeekedBytes{}, nil, ErrNotTCPConn
@@ -69,7 +58,7 @@ type ManetTCPConnInterface interface {
 	tcpConnInterface
 }
 
-func newFallbackSampledConn(conn ManetTCPConnInterface) (PeekedBytes, *fallbackPeekingConn, error) {
+func wrappedSampledConn(conn ManetTCPConnInterface) (PeekedBytes, *fallbackPeekingConn, error) {
 	s := &fallbackPeekingConn{ManetTCPConnInterface: conn}
 	n, err := io.ReadFull(conn, s.peekedBytes[:])
 	if err != nil {
