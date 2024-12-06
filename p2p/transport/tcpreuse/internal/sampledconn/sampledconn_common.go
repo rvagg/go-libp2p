@@ -14,8 +14,6 @@ const peekSize = 3
 
 type PeekedBytes = [peekSize]byte
 
-var errNotSupported = errors.New("not supported on this platform")
-
 var ErrNotTCPConn = errors.New("passed conn is not a TCPConn")
 
 func PeekBytes(conn manet.Conn) (PeekedBytes, manet.Conn, error) {
