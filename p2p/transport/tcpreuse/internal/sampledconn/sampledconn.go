@@ -18,13 +18,13 @@ var ErrNotTCPConn = errors.New("passed conn is not a TCPConn")
 
 func PeekBytes(conn manet.Conn) (PeekedBytes, manet.Conn, error) {
 	if c, ok := conn.(ManetTCPConnInterface); ok {
-		return wrappedSampledConn(c)
+		return newWrappedSampledConn(c)
 	}
 
 	return PeekedBytes{}, nil, ErrNotTCPConn
 }
 
-type fallbackPeekingConn struct {
+type wrappedSampledConn struct {
 	ManetTCPConnInterface
 	peekedBytes PeekedBytes
 	bytesPeeked uint8
@@ -56,8 +56,8 @@ type ManetTCPConnInterface interface {
 	tcpConnInterface
 }
 
-func wrappedSampledConn(conn ManetTCPConnInterface) (PeekedBytes, *fallbackPeekingConn, error) {
-	s := &fallbackPeekingConn{ManetTCPConnInterface: conn}
+func newWrappedSampledConn(conn ManetTCPConnInterface) (PeekedBytes, *wrappedSampledConn, error) {
+	s := &wrappedSampledConn{ManetTCPConnInterface: conn}
 	n, err := io.ReadFull(conn, s.peekedBytes[:])
 	if err != nil {
 		if n == 0 && err == io.EOF {
@@ -68,7 +68,7 @@ func wrappedSampledConn(conn ManetTCPConnInterface) (PeekedBytes, *fallbackPeeki
 	return s.peekedBytes, s, nil
 }
 
-func (sc *fallbackPeekingConn) Read(b []byte) (int, error) {
+func (sc *wrappedSampledConn) Read(b []byte) (int, error) {
 	if int(sc.bytesPeeked) != len(sc.peekedBytes) {
 		red := copy(b, sc.peekedBytes[sc.bytesPeeked:])
 		sc.bytesPeeked += uint8(red)
