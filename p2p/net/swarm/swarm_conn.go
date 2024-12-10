@@ -72,9 +72,12 @@ func debugLogForOrphanedStreams(connlabel string, streams map[*Stream]struct{}) 
 			delete(streams, s)
 		}
 	}
+	if len(streams) == 0 {
+		return
+	}
 
-	<-time.After(5 * time.Second)
-	for range time.NewTicker(5 * time.Second).C {
+	go func() {
+		<-time.After(time.Minute)
 		var orphanedStreams int
 		var ownerInfo []string
 		for s := range streams {
@@ -96,7 +99,7 @@ func debugLogForOrphanedStreams(connlabel string, streams map[*Stream]struct{}) 
 		for _, info := range ownerInfo {
 			fmt.Printf("Stream owner: %s\n\n", info)
 		}
-	}
+	}()
 }
 
 func (c *Conn) doClose() {
@@ -120,7 +123,7 @@ func (c *Conn) doClose() {
 	// for s := range streams {
 	// s.Reset()
 	// }
-	go debugLogForOrphanedStreams(c.String(), streams)
+	debugLogForOrphanedStreams(c.String(), streams)
 
 	// do this in a goroutine to avoid deadlocking if we call close in an open notification.
 	go func() {
