@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -75,6 +76,7 @@ func debugLogForOrphanedStreams(connlabel string, streams map[*Stream]struct{}) 
 	<-time.After(5 * time.Second)
 	for range time.NewTicker(5 * time.Second).C {
 		var orphanedStreams int
+		var ownerInfo []string
 		for s := range streams {
 			s.closeMx.Lock()
 			isClosed := s.isClosed
@@ -82,6 +84,7 @@ func debugLogForOrphanedStreams(connlabel string, streams map[*Stream]struct{}) 
 			if isClosed {
 				delete(streams, s)
 			} else {
+				ownerInfo = append(ownerInfo, string(s.Protocol())+" - "+string(s.owner))
 				orphanedStreams++
 			}
 		}
@@ -90,6 +93,9 @@ func debugLogForOrphanedStreams(connlabel string, streams map[*Stream]struct{}) 
 		}
 
 		fmt.Printf("Conn: %s has orphaned streams: %d\n", connlabel, orphanedStreams)
+		for _, info := range ownerInfo {
+			fmt.Printf("Stream owner: %s\n\n", info)
+		}
 	}
 }
 
@@ -170,6 +176,7 @@ func (c *Conn) start() {
 					return
 				}
 
+				s.owner = []byte("Inbound stream")
 				if h := c.swarm.StreamHandler(); h != nil {
 					h(s)
 				}
@@ -275,9 +282,12 @@ func (c *Conn) addStream(ts network.MuxedStream, dir network.Direction, scope ne
 		return nil, ErrConnClosed
 	}
 
+	stackTraceStr := debug.Stack()
+
 	// Wrap and register the stream.
 	s := &Stream{
 		stream: ts,
+		owner:  stackTraceStr,
 		conn:   c,
 		scope:  scope,
 		stat: network.Stats{
