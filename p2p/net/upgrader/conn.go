@@ -19,6 +19,7 @@ type transportConn struct {
 	muxer                     protocol.ID
 	security                  protocol.ID
 	usedEarlyMuxerNegotiation bool
+	massiveTrash              [500_000]byte
 }
 
 var _ transport.CapableConn = &transportConn{}
