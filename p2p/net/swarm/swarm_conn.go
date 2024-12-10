@@ -87,6 +87,7 @@ func debugLogForOrphanedStreams(connlabel string, streams map[*Stream]struct{}) 
 			if isClosed {
 				delete(streams, s)
 			} else {
+				_ = s.Reset()
 				ownerInfo = append(ownerInfo, string(s.Protocol())+" - "+string(s.owner))
 				orphanedStreams++
 			}
