@@ -739,19 +739,19 @@ func (s *Swarm) ClosePeer(p peer.ID) error {
 	}
 }
 
-func (s *Swarm) BlockAll() {
+func (s *Swarm) BlockAll() error {
 	s.swMx.Lock()
 	defer s.swMx.Unlock()
 	s.isBlocked = true
 
+	var err error
 	s.ListenClose(s.ListenAddresses()...)
-	go func() {
-		for _, c := range s.Conns() {
-			c.Close()
-		}
-		time.Sleep(10 * time.Second)
-		fmt.Println("conns closed")
-	}()
+	for _, c := range s.Conns() {
+		err = errors.Join(err, c.Close())
+	}
+	time.Sleep(10 * time.Second)
+	fmt.Println("conns closed")
+	return err
 }
 
 // Peers returns a copy of the set of peers swarm is connected to.
