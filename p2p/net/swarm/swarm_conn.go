@@ -62,6 +62,37 @@ func (c *Conn) Close() error {
 	return c.err
 }
 
+func debugLogForOrphanedStreams(connlabel string, streams map[*Stream]struct{}) {
+	for s := range streams {
+		s.closeMx.Lock()
+		isClosed := s.isClosed
+		s.closeMx.Unlock()
+		if isClosed {
+			delete(streams, s)
+		}
+	}
+
+	<-time.After(5 * time.Second)
+	for range time.NewTicker(5 * time.Second).C {
+		var orphanedStreams int
+		for s := range streams {
+			s.closeMx.Lock()
+			isClosed := s.isClosed
+			s.closeMx.Unlock()
+			if isClosed {
+				delete(streams, s)
+			} else {
+				orphanedStreams++
+			}
+		}
+		if orphanedStreams == 0 {
+			return
+		}
+
+		fmt.Printf("Conn: %s has orphaned streams: %d\n", connlabel, orphanedStreams)
+	}
+}
+
 func (c *Conn) doClose() {
 	c.swarm.removeConn(c)
 
@@ -80,9 +111,10 @@ func (c *Conn) doClose() {
 
 	// This is just for cleaning up state. The connection has already been closed.
 	// We *could* optimize this but it really isn't worth it.
-	for s := range streams {
-		s.Reset()
-	}
+	// for s := range streams {
+	// s.Reset()
+	// }
+	go debugLogForOrphanedStreams(c.String(), streams)
 
 	// do this in a goroutine to avoid deadlocking if we call close in an open notification.
 	go func() {
