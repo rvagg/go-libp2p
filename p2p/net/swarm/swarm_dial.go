@@ -225,6 +225,12 @@ func (db *DialBackoff) cleanup() {
 // This allows us to use various transport protocols, do NAT traversal/relay,
 // etc. to achieve connection.
 func (s *Swarm) DialPeer(ctx context.Context, p peer.ID) (network.Conn, error) {
+	s.swMx.Lock()
+	if s.isBlocked {
+		s.swMx.Unlock()
+		return nil, errors.New("swarm blocked")
+	}
+	s.swMx.Unlock()
 	// Avoid typed nil issues.
 	c, err := s.dialPeer(ctx, p)
 	if err != nil {

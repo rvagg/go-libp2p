@@ -222,6 +222,9 @@ type Swarm struct {
 	ipv6BHF                   *BlackHoleSuccessCounter
 	bhd                       *blackHoleDetector
 	readOnlyBHD               bool
+
+	swMx      sync.Mutex
+	isBlocked bool
 }
 
 // NewSwarm constructs a Swarm.
@@ -734,6 +737,21 @@ func (s *Swarm) ClosePeer(p peer.ID) error {
 		}
 		return nil
 	}
+}
+
+func (s *Swarm) BlockAll() {
+	s.swMx.Lock()
+	defer s.swMx.Unlock()
+	s.isBlocked = true
+
+	s.ListenClose(s.ListenAddresses()...)
+	go func() {
+		for _, c := range s.Conns() {
+			c.Close()
+		}
+		time.Sleep(10 * time.Second)
+		fmt.Println("conns closed")
+	}()
 }
 
 // Peers returns a copy of the set of peers swarm is connected to.
