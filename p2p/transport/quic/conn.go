@@ -13,6 +13,7 @@ import (
 )
 
 type conn struct {
+	Oid       uint64
 	quicConn  quic.Connection
 	transport *transport
 	scope     network.ConnManagementScope

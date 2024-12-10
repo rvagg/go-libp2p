@@ -128,6 +128,7 @@ func (l *listener) wrapConnWithScope(qconn quic.Connection, connScope network.Co
 	}
 
 	return &conn{
+		Oid:             0xcaffe14e00000001,
 		quicConn:        qconn,
 		transport:       l.transport,
 		scope:           connScope,

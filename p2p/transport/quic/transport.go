@@ -159,6 +159,7 @@ func (t *transport) dialWithScope(ctx context.Context, raddr ma.Multiaddr, p pee
 		return nil, err
 	}
 	c := &conn{
+		Oid:             0xcaffe14e00000001,
 		quicConn:        pconn,
 		transport:       t,
 		scope:           scope,

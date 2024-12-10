@@ -9,6 +9,7 @@ import (
 )
 
 type transportConn struct {
+	Oid uint64
 	network.MuxedConn
 	network.ConnMultiaddrs
 	network.ConnSecurity

@@ -187,6 +187,7 @@ func (u *upgrader) upgrade(ctx context.Context, t transport.Transport, maconn ma
 	}
 
 	tc := &transportConn{
+		Oid:                       0xcaffe14e00000000,
 		MuxedConn:                 smconn,
 		ConnMultiaddrs:            maconn,
 		ConnSecurity:              sconn,
